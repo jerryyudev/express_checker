@@ -1,170 +1,74 @@
-# -*- coding: utf-8 -*-
 import requests
 import json
-import re
 import telegram
-import asyncio
-import datetime
-import os # Import os to access environment variables
 
-# --- Configuration (Read from Environment Variables) ---
-# Use os.getenv to read secrets passed from GitHub Actions (or set locally for testing)
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-
-# Check if secrets are loaded
-if not BOT_TOKEN or not CHAT_ID:
-    print("Error: BOT_TOKEN or CHAT_ID environment variable not set.")
-    # In a real scenario, you might want to exit or handle this differently
-    # For this example, we'll let it proceed and fail during Telegram sending if None.
-    # However, it's better to raise an error or exit:
-    raise ValueError("BOT_TOKEN and CHAT_ID must be set as environment variables.")
-
-
-# The EXACT URL provided by the user.
-# Still contains dynamic tokens (tokenV2, qid, cb) and might eventually fail.
-BAIDU_EXPRESS_URL = "https://alayn.baidu.com/express/appdetail/pc_express?query_from_srcid=51150&tokenV2=PB6Db7Bjgl4bhDpmXsaKgTezyeLtuZ%2Fk3dTd1GqgYg0T%2FAbVMD2LGimQ6iwBN%2B29&com=zhongtong&nu=73549140994117&qid=ceb8908d01aa384a&cb=jsonp_1743854073741_90066"
-
-# --- Headers ---
-# Mimicking browser headers MORE CLOSELY based on the initial curl command.
-# IMPORTANT: The 'cookie' header is OMITTED. Using the exact cookie string
-# from the example is insecure (exposes session tokens like BDUSS) and
-# likely invalid anyway as cookies are session/time-bound.
-# The API *might* work without the cookie, or it might fail validation.
-HEADERS = {
-    'Accept': '*/*', # From curl
-    'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7', # From curl
-    # 'Cookie': '...', # OMITTED - Insecure and likely invalid
-    'Referer': 'https://www.baidu.com/s?wd=73549140994117&rsv_spt=1&rsv_iqid=0xac96865902bd0b9a&issp=1&f=8&rsv_bp=1&rsv_idx=2&ie=utf-8&tn=68018901_16_pg&rsv_dl=tb&rsv_enter=1&rsv_sug3=2&rsv_n=2&rsv_sug2=0&rsv_btype=i&inputT=696&rsv_sug4=1024', # From curl
-    'Sec-Fetch-Dest': 'script', # From curl
-    'Sec-Fetch-Mode': 'no-cors', # From curl
-    'Sec-Fetch-Site': 'same-site', # From curl
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15 Edg/131.0.0.0' # From curl
-}
-
-# --- Functions (parse_jsonp, send_telegram_message - kept similar) ---
-
-def parse_jsonp(jsonp_str):
-    """Parses JSONP string to extract JSON object."""
-    try:
-        match = re.search(r'^\s*[\w.]+\s*\((.*)\)\s*;?\s*$', jsonp_str, re.DOTALL)
-        if match:
-            json_str = match.group(1)
-            return json.loads(json_str)
-        else:
-            return json.loads(jsonp_str) # Fallback
-    except (json.JSONDecodeError, TypeError, AttributeError) as e:
-        print(f"Error parsing JSONP/JSON: {e}")
-        print(f"Response Text (first 200 chars): {str(jsonp_str)[:200]}...")
-        return None
-
-async def send_telegram_message(bot_token, chat_id, message):
-    """Sends a message to Telegram using the bot."""
-    if not bot_token or not chat_id:
-        print("Error: Cannot send Telegram message, BOT_TOKEN or CHAT_ID is missing.")
-        return # Prevent trying to initialize bot with None token
-
+def send_telegram_message(bot_token, chat_id, message):
+    """发送 Telegram 消息"""
     try:
         bot = telegram.Bot(token=bot_token)
-        # Send message using MarkdownV2 for potential formatting, escape special chars
-        # For simplicity, we send plain text first. Add formatting if needed later.
-        await bot.send_message(chat_id=chat_id, text=message) # Consider adding parse_mode=telegram.constants.ParseMode.MARKDOWN_V2 if formatting
-        print(f"Message successfully sent to Telegram chat ID {chat_id}")
-    except telegram.error.TelegramError as e:
-        print(f"Error sending message to Telegram: {e}")
-        # Provide more context for common errors
-        if "chat not found" in str(e):
-            print("Hint: Check if CHAT_ID is correct and if the bot was started by the user/chat.")
-        elif "Unauthorized" in str(e):
-             print("Hint: Check if BOT_TOKEN is correct.")
+        bot.send_message(chat_id=chat_id, text=message)
+        print(f"消息已成功发送至 TGID: {chat_id}")
     except Exception as e:
-        print(f"An unexpected error occurred during Telegram sending: {e}")
+        print(f"发送 Telegram 消息失败: {e}")
 
-async def query_and_send():
-    """Queries express status using the specific URL and sends result to Telegram."""
-    print(f"Attempting to query URL with detailed headers (excluding cookie)...")
-    print(f"URL: {BAIDU_EXPRESS_URL}")
-
-    final_message_to_send = "Default: No status update or query failed." # Default message
-
-    try:
-        response = requests.get(BAIDU_EXPRESS_URL, headers=HEADERS, timeout=30) # Increased timeout slightly
-        response.raise_for_status() # Check for HTTP errors (4xx, 5xx)
-
-        print(f"HTTP Status Code: {response.status_code}. Parsing response...")
-
-        data = parse_jsonp(response.text)
-
-        if data:
-            if data.get('status') == 0 and 'data' in data and 'context' in data['data'] and data['data']['context']:
-                latest_update = data['data']['context'][0] # Assuming newest is first
-                timestamp = latest_update.get('time')
-                description = latest_update.get('desc', 'No description available.')
-
-                time_str = "Timestamp N/A"
-                if isinstance(timestamp, (int, float)):
-                    try:
-                        # Assuming timestamp is in seconds UTC
-                        dt_object = datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc)
-                        # Convert to a specific timezone if needed, e.g., Asia/Bangkok (ICT, UTC+7)
-                        # For simplicity, keeping UTC or server's local time interpretation for now.
-                        # Let's format clearly with timezone info if possible
-                        # dt_object_local = dt_object.astimezone() # Convert to system's local timezone
-                        # time_str = dt_object_local.strftime("%Y-%m-%d %H:%M:%S %Z")
-                        time_str = datetime.datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S") # Simpler local time
-
-                    except Exception as time_e:
-                        print(f"Timestamp conversion error: {time_e}")
-                        time_str = f"Raw timestamp: {timestamp}"
-
-                tracking_number = "73549140994117" # Hardcoded
-                company_name = data.get('data', {}).get('officalService', {}).get('comName', '中通快递')
-
-                final_message_to_send = (
-                    f"✅ 快递更新 ({company_name} - {tracking_number}):\n"
-                    f"⏰ 时间: {time_str}\n"
-                    f"📄 状态: {description}"
-                )
-                print(f"Successfully extracted status: {description}")
-
-            else:
-                error_msg = data.get('msg', 'No error message from API.')
-                status_code = data.get('status', 'N/A')
-                error_code = data.get('error_code', 'N/A')
-                final_message_to_send = f"⚠️ 查询失败 (API Response):\n状态码: {status_code}\n错误码: {error_code}\n消息: {error_msg}"
-                print(f"API indicated failure: Status={status_code}, Msg={error_msg}")
-        else:
-            final_message_to_send = "❌ 查询失败: 无法解析服务器响应 (JSONP/JSON Error)."
-            print("Failed to parse API response.")
-
-    except requests.exceptions.Timeout:
-        error_msg = "❌ 查询失败: 请求百度 API 超时."
-        print(error_msg)
-        final_message_to_send = error_msg
-    except requests.exceptions.HTTPError as e:
-        error_msg = f"❌ 查询失败: HTTP Error {e.response.status_code}.\nResponse: {e.response.text[:200]}..."
-        print(error_msg)
-        final_message_to_send = error_msg
-    except requests.exceptions.RequestException as e:
-        error_msg = f"❌ 查询失败: 网络请求错误: {e}"
-        print(error_msg)
-        final_message_to_send = error_msg
-    except Exception as e:
-        # Catch other potential errors, e.g., during Telegram init if token is bad
-        error_msg = f"❌ 发生意外错误: {e}"
-        print(error_msg)
-        final_message_to_send = error_msg
-
-    # --- Send to Telegram ---
-    print("\nSending result to Telegram...")
-    await send_telegram_message(BOT_TOKEN, CHAT_ID, final_message_to_send)
-
-# --- Run the main asynchronous function ---
-if __name__ == "__main__":
-    print("Executing Express Check Script...")
-    # Check for tokens at the start in __main__ as well
-    if not BOT_TOKEN or not CHAT_ID:
-        print("Critical Error: BOT_TOKEN or CHAT_ID environment variables are not set. Exiting.")
+def format_express_data(data):
+    """格式化快递信息"""
+    formatted_message = "【快递信息】\n\n"
+    if "data" in data and "context" in data["data"]:
+        formatted_message += "物流轨迹:\n"
+        for item in data["data"]["context"]:
+            formatted_message += f"- 时间: {item['time']}, 地点/描述: {item['desc']}\n"
+        formatted_message += "\n"
+    if "data" in data and "officalService" in data["data"]:
+        formatted_message += "官方信息:\n"
+        formatted_message += f"- 公司名称: {data['data']['officalService']['comName']}\n"
+        formatted_message += f"- 官方电话: {data['data']['officalService']['servicePhone']}\n"
+        formatted_message += f"- 官网地址: {data['data']['officalService']['url']}\n"
+        if "service" in data["data"]["officalService"]:
+            formatted_message += "更多服务:\n"
+            for service in data["data"]["officalService"]["service"]:
+                formatted_message += f"  - {service['name']}: {service['url']}\n"
+    elif "msg" in data:
+        formatted_message += f"错误信息: {data['msg']}\n"
     else:
-        asyncio.run(query_and_send())
-    print("Script finished.")
+        formatted_message += "未能解析快递信息。\n"
+    return formatted_message
+
+def fetch_express_data(url, headers):
+    """发送 curl 请求获取快递数据"""
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()  # 检查请求是否成功
+        # 处理 JSONP 格式的数据
+        content = response.text.replace("jsonp_1745405091346_59609(", "").replace(")", "")
+        data = json.loads(content)
+        return data
+    except requests.exceptions.RequestException as e:
+        print(f"请求失败: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"JSON 解析失败: {e}")
+        return None
+
+if __name__ == "__main__":
+    url = "https://alayn.baidu.com/express/appdetail/pc_express?query_from_srcid=51150&tokenV2=wzUQQuOXKkbBg0u4CvHGef1li4jp3iqIk1UITh7%2FVopP15dPsO%2FdP%2FemO6EEmxr6&com=shentong&nu=773350868039582&qid=bdd4518e000080d4&cb=jsonp_1745405091346_59609"
+    headers = {
+        "accept": "*/*",
+        "accept-language": "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
+        "cookie": "BDUSS=M1elRwSUdEUkVQNGMyOUNxMkN4U2QwcnVJaWJGcWs2OWQ3NE81fkZhVW43Z1JvRVFBQUFBJCQAAAAAAQAAAAEAAABntqkMzuXOrL~VvOQ2NjY2AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACdh3WcnYd1ndH; BDUSS_BFESS=M1elRwSUdEUkVQNGMyOUNxMkN4U2QwcnVJaWJGcWs2OWQ3NE81fkZhVW43Z1JvRVFBQUFBJCQAAAAAAQAAAAEAAABntqkMzuXOrL~VvOQ2NjY2AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACdh3WcnYd1ndH; PSTM=1742564148; BAIDUID=79FCA02E0250A59156351BF08691ACE7:SL=0:NR=10:FG=1; MCITY=-131%3A; H_WISE_SIDS_BFESS=61027_62342_62327_62677_62721_62848_62878_62881_62885_62919_62921_62968; BIDUPSID=1F6975F965D32D3F99F05F3E76C74890; H_WISE_SIDS=61027_62342_62327_62677_62721_62878_62881_62885_62919_62921_62968; H_PS_PSSID=61027_62342_62327_62721_62878_62881_62885_62968_63041_63045; BAIDUID_BFESS=79FCA02E0250A59156351BF08691ACE7:SL=0:NR=10:FG=1; ab_sr=1.0.1_NWRkZjdlNmY3NmE2ZDkyYjQ1OWU4NTk1YjFkN2RhODk5YjJhYjlhMGE5NDkyMDFiODJkZTQ3ZjQ0Nzk1NDlkZWE1ZTZhYTAzZGI4NWMyYzFjZTUzYmNlZDExNWJhNjQwYmFlOWY0NTU1OTUzMzM2OTAwYTVjYWZlNWMwYjE4MjI5ZGJmNzM1NDlhYjk1YTg1NTg4YmE5NjFjNjhlYTQ1NDU5YjA3NzE1YTIwZTkyMTU2YjZjMGE5OTFmMWM0YzMx; RT=\"z=1&dm=baidu.com&si=b1ddcf3c-3eb2-4959-865d-2bf46b642e82&ss=m9tt3yvf&sl=1&tt=2it&bcn=https%3A%2F%2Ffclog.baidu.com%2Flog%2Fweirwood%3Ftype%3Dperf&ld=3ds\"",
+        "referer": "https://www.baidu.com/s?ie=utf-8&f=8&rsv_bp=1&rsv_idx=1&tn=baidu&wd=773350868039582&fenlei=256&rsv_pq=0x8fec8a15001e861a&rsv_t=8ec1WXBdhga%2F8%2Ft9E92aHj9FbmumqtAOyWwv3GblnfRqRAreRg%2FueTi%2F%2Brj%2B&rqlang=en&rsv_enter=1&rsv_dl=tb&rsv_sug3=2&rsv_n=2&rsv_sug2=0&rsv_btype=i&inputT=1138&rsv_sug4=1274",
+        "sec-fetch-dest": "script",
+        "sec-fetch-mode": "no-cors",
+        "sec-fetch-site": "same-site",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15 Edg/131.0.0.0"
+    }
+    bot_token = "7394878059:AAHS8AOQ4Y9cnIhoO2j-o8cQnKhTZUWq3K4"
+    target_tg_id = "7854789916"
+
+    express_data = fetch_express_data(url, headers)
+
+    if express_data:
+        formatted_message = format_express_data(express_data)
+        send_telegram_message(bot_token, target_tg_id, formatted_message)
+    else:
+        send_telegram_message(bot_token, target_tg_id, "获取快递信息失败。")
